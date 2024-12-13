@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot Edukasi Hewan</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.2.0/dist/tf.min.js"></script>
+    <style>
+        /* Style CSS sama seperti sebelumnya */
+        body, html {
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+        .phone-container {
+            width: 360px;
+            height: 640px;
+            background-color: white;
+            border-radius: 20px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-header {
+            background-color: #4a4a4a;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-weight: bold;
+        }
+        .chat-body {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+        }
+        .message {
+            max-width: 80%;
+            margin-bottom: 10px;
+            padding: 10px;
+            border-radius: 10px;
+        }
+        .user-message {
+            align-self: flex-end;
+            background-color: #007bff;
+            color: white;
+        }
+        .bot-message {
+            align-self: flex-start;
+            background-color: #e9ecef;
+            color: black;
+        }
+        .input-area {
+            display: flex;
+            padding: 10px;
+            background-color: #f8f9fa;
+        }
+        #question-input {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 5px;
+            margin-right: 10px;
+        }
+        #send-btn {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0,0,0,0.7);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="phone-container">
+        <div class="chat-header">Chatbot Edukasi Hewan</div>
+        <div id="chat-body" class="chat-body"></div>
+        <div class="loading" id="loading">Memuat Model...</div>
+        <div class="input-area">
+            <input type="text" id="question-input" placeholder="Tanya sesuatu tentang hewan..." disabled>
+            <button id="send-btn" disabled>Kirim</button>
+        </div>
+    </div>
+
+    <script>
+        let model;
+        let tokenizersConfig;
+        let metadata;
+        let isModelReady = false;
+
+        async function createModel() {
+            const maxQuestionLength = tokenizersConfig.max_lengths.question;
+            const vocabSizeQuestions = Object.keys(tokenizersConfig.questions.word_index).length + 1;
+
+            const input = tf.input({shape: [maxQuestionLength], name: 'input_layer'});
+            
+            const embedding = tf.layers.embedding({
+                inputDim: vocabSizeQuestions,
+                outputDim: 64,
+                inputLength: maxQuestionLength,
+                name: 'embedding'
+            }).apply(input);
+
+            const lstm = tf.layers.lstm({
+                units: 128,
+                returnSequences: false,
+                name: 'lstm'
+            }).apply(embedding);
+
+            const answerOutput = tf.layers.dense({
+                units: 105,  // Sesuai dengan metadata
+                activation: 'softmax',
+                name: 'answer_output'
+            }).apply(lstm);
+
+            const categoryOutput = tf.layers.dense({
+                units: 5,    // Sesuai dengan metadata
+                activation: 'softmax',
+                name: 'category_output'
+            }).apply(lstm);
+
+            const model = tf.model({
+                inputs: input,
+                outputs: [answerOutput, categoryOutput]
+            });
+
+            return model;
+        }
+
+        async function loadModel() {
+            try {
+                document.getElementById('loading').style.display = 'block';
+                
+                // Load tokenizers dan metadata
+                const [tokenizersResponse, metadataResponse] = await Promise.all([
+                    fetch('saved_model/tokenizers.json'),
+                    fetch('saved_model/metadata.json')
+                ]);
+                
+                tokenizersConfig = await tokenizersResponse.json();
+                metadata = await metadataResponse.json();
+
+                // Buat model
+                model = await createModel();
+
+                // Load weights
+                const weightsResponse = await fetch('saved_model/weights.bin');
+                const weightsBuffer = await weightsResponse.arrayBuffer();
+                const weightsData = new Float32Array(weightsBuffer);
+
+                // Reorganisasi weights sesuai metadata
+                let offset = 0;
+                const weightsTensors = [];
+
+                for (let i = 0; i < metadata.weight_shapes.length; i++) {
+                    const shape = metadata.weight_shapes[i];
+                    const size = shape.reduce((a, b) => a * b, 1);
+                    const layerWeights = weightsData.slice(offset, offset + size);
+                    weightsTensors.push(tf.tensor(layerWeights, shape));
+                    offset += size;
+                }
+
+                // Set weights untuk setiap layer
+                let currentIndex = 0;
+                
+                // Embedding layer weights (1 tensor)
+                model.getLayer('embedding').setWeights([
+                    weightsTensors[currentIndex++]
+                ]);
+
+                // LSTM weights (3 tensors)
+                model.getLayer('lstm').setWeights([
+                    weightsTensors[currentIndex++],
+                    weightsTensors[currentIndex++],
+                    weightsTensors[currentIndex++]
+                ]);
+
+                // Answer output weights (2 tensors: kernel dan bias)
+                model.getLayer('answer_output').setWeights([
+                    weightsTensors[currentIndex++],
+                    weightsTensors[currentIndex++]
+                ]);
+
+                // Category output weights (2 tensors: kernel dan bias)
+                model.getLayer('category_output').setWeights([
+                    weightsTensors[currentIndex++],
+                    weightsTensors[currentIndex++]
+                ]);
+
+                console.log('Model loaded successfully');
+                isModelReady = true;
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('question-input').disabled = false;
+                document.getElementById('send-btn').disabled = false;
+
+                addMessage('Halo! Saya adalah chatbot edukasi hewan. Silakan tanyakan sesuatu tentang hewan!', 'bot-message');
+            } catch (error) {
+                console.error('Error loading model:', error);
+                document.getElementById('loading').textContent = 'Gagal memuat model. Error: ' + error.message;
+            }
+        }
+
+        function preprocessQuestion(question) {
+            const words = question.toLowerCase().split(' ');
+            const tokens = words.map(word => 
+                tokenizersConfig.questions.word_index[word] || 0
+            );
+            
+            const maxLength = tokenizersConfig.max_lengths.question;
+            const paddedTokens = Array(maxLength).fill(0);
+            
+            for (let i = 0; i < tokens.length && i < maxLength; i++) {
+                paddedTokens[i] = tokens[i];
+            }
+
+            return tf.tensor2d([paddedTokens], [1, maxLength]);
+        }
+
+        async function predictAnswer(question) {
+            const inputTensor = preprocessQuestion(question);
+            
+            try {
+                const [answerPred, categoryPred] = model.predict(inputTensor);
+                
+                const answerIndex = answerPred.argMax(1).dataSync()[0];
+                const categoryIndex = categoryPred.argMax(1).dataSync()[0];
+                
+                const answer = Object.entries(tokenizersConfig.answers.word_index)
+                    .find(([_, value]) => value === answerIndex)?.[0] || 'Tidak diketahui';
+                    
+                const category = Object.entries(tokenizersConfig.categories.word_index)
+                    .find(([_, value]) => value === categoryIndex)?.[0] || 'Tidak diketahui';
+
+                tf.dispose([inputTensor, answerPred, categoryPred]);
+
+                return { answer, category };
+            } catch (error) {
+                console.error('Prediction error:', error);
+                throw new Error('Gagal melakukan prediksi');
+            }
+        }
+
+        function addMessage(text, type) {
+            const chatBody = document.getElementById('chat-body');
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', type);
+            messageDiv.textContent = text;
+            chatBody.appendChild(messageDiv);
+            chatBody.scrollTop = chatBody.scrollHeight;
+        }
+
+        document.getElementById('send-btn').addEventListener('click', async () => {
+            if (!isModelReady) return;
+
+            const inputElement = document.getElementById('question-input');
+            const question = inputElement.value.trim();
+            
+            if (question) {
+                addMessage(question, 'user-message');
+                inputElement.value = '';
+                inputElement.disabled = true;
+                document.getElementById('send-btn').disabled = true;
+
+                try {
+                    const { answer, category } = await predictAnswer(question);
+                    addMessage(`Jawaban: ${answer}\nKategori: ${category}`, 'bot-message');
+                } catch (error) {
+                    console.error('Error during prediction:', error);
+                    addMessage('Maaf, terjadi kesalahan dalam memproses pertanyaan.', 'bot-message');
+                }
+
+                inputElement.disabled = false;
+                document.getElementById('send-btn').disabled = false;
+                inputElement.focus();
+            }
+        });
+
+        document.getElementById('question-input').addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                document.getElementById('send-btn').click();
+            }
+        });
+
+        loadModel();
+    </script>
+</body>
+</html>

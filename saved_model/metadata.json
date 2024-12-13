@@ -1,0 +1,50 @@
+{
+  "layer_names": [
+    "input_layer",
+    "embedding",
+    "lstm",
+    "answer_output",
+    "category_output"
+  ],
+  "weight_shapes": [
+    [
+      158,
+      64
+    ],
+    [
+      64,
+      512
+    ],
+    [
+      128,
+      512
+    ],
+    [
+      512
+    ],
+    [
+      128,
+      105
+    ],
+    [
+      105
+    ],
+    [
+      128,
+      5
+    ],
+    [
+      5
+    ]
+  ],
+  "weight_dtypes": [
+    "float32",
+    "float32",
+    "float32",
+    "float32",
+    "float32",
+    "float32",
+    "float32",
+    "float32"
+  ]
+}
